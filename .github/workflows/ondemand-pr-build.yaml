@@ -1,0 +1,56 @@
+name: on-deman build the copr way
+on:
+  pull_request:
+    types: [labeled]
+
+env:
+  action_label: build artifacts
+
+jobs:
+  build_el8:
+    name: when the label is added, build the rpm repo for the PR
+    if: ${{ github.event.label.name == env.action_label }}
+
+    runs-on: ubuntu-latest
+    container:
+      image: quay.io/centos/centos:stream8
+
+    steps:
+      - name: enable repos, choose module versions, install build.sh required packages
+        run: |
+          dnf -y copr enable ovirt/ovirt-master-snapshot centos-stream-8
+          dnf -y module enable nodejs:14
+          dnf -y install git jq wget rpmlint rpm-build nodejs ovirt-engine-nodejs-modules
+
+      # https://github.com/actions/checkout#checkout-pull-request-head-commit-instead-of-merge-commit
+      - name: checkout sources (PR head, not the PR merge)
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 20
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: build srpm
+        run: ./automation/build.sh copr
+
+      - name: install build dependencies from srpm
+        run: |
+          dnf -y builddep exported-artifacts/ovirt-engine-nodejs-modules*.src.rpm
+
+      - name: Build rpm directly from srpm
+        run: |
+          rpmbuild \
+            --define="_rpmdir `pwd`/exported-artifacts" \
+            --rebuild exported-artifacts/ovirt-engine-nodejs-modules*.src.rpm
+
+      - name: upload artifacts
+        uses: ovirt/upload-rpms-action@v2
+        with:
+          directory: exported-artifacts/
+
+      # TODO: If build is successful, post a comment to the PR with a link the the artifacts zip. Otherwise, post "build failed".
+
+      - name: remove label
+        uses: actions-ecosystem/action-remove-labels@v1
+        if: always()
+        with:
+          labels: ${{ env.action_label }}
